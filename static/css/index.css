@@ -155,3 +155,6 @@ body {
 #interpolation-image-wrapper img {
   border-radius: 5px;
 }
+.hero + .section {
+  padding-top: 0.5rem;  /* menos espacio arriba */
+}
