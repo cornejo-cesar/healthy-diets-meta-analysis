@@ -1,0 +1,372 @@
+###############################
+# 1.  LOAD LIBRARIES AND DATA #
+##############################
+
+# Load libraries
+library(readxl)
+library(metafor)
+library(clubSandwich)
+library(dmetar)
+library(dplyr)
+library(extrafont)
+
+loadfonts(device = "win")
+windowsFonts("Fira Sans" = windowsFont("Fira Sans"))
+
+##########################
+# 2.  PREPARE THE DATA   #
+#########################
+
+# Load data
+data <- read_excel(file.path(data_path, "Raw data 3.xlsx"))
+
+# Prep. data
+source(file.path(functions_path, "prep_data.R"))
+
+# Table with values only for depression, anxiety, and stress
+depr   <- subset(data, !is.na(depr_z) & unique_statistic == 1 & participation == "Low")
+anx    <- subset(data, !is.na(anx_z) & unique_statistic == 1 & participation == "Low")
+stress <- subset(data, !is.na(stress_z) & unique_statistic == 1 & participation == "Low")
+
+# Create a data frame for meta-analysis - Depression
+depr_meta <- data.frame(
+  slab                  = depr$author_year,                                     # Study label (author and year)
+  n                     = depr$n,                                               # Sample size
+  sample_n              = depr$n_final,                                         # sample cohort
+  effect_size_id        = depr$effect_size_id,                                  # Effect size identifier
+  pop_cohort_dataset_id = depr$pop_cohort_dataset_id,                           # Population cohort/dataset identifier
+  sample_label          = depr$sample_label,
+  g                     = depr$depr_g                                        
+)                                                                                                             
+depr_meta$se <- sqrt((4 / depr_meta$n) + (depr_meta$g^2 / (2 * (depr_meta$n - 2))))                                  
+depr_meta$vi <- depr_meta$se^2
+
+# Create a data frame for meta-analysis - Depression
+anx_meta <- data.frame(
+  slab                  = anx$author_year,                                      # Study label (author and year)
+  n                     = anx$n,                                                # Sample size
+  sample_n              = anx$n_final,                                          # sample cohort
+  effect_size_id        = anx$effect_size_id,                                   # Effect size identifier
+  pop_cohort_dataset_id = anx$pop_cohort_dataset_id,                            # Population cohort/dataset identifier
+  sample_label          = anx$sample_label,
+  g                     = anx$anx_g                                             
+)                                                                               
+anx_meta$se <- sqrt((4 / anx_meta$n) + (anx_meta$g^2 / (2 * (anx_meta$n - 2))))                                       
+anx_meta$vi  <- anx_meta$se^2
+
+# Create a data frame for meta-analysis - Depression
+stress_meta <- data.frame(
+  slab                  = stress$author_year,                                   # Study label (author and year)
+  n                     = stress$n,                                             # Sample size
+  sample_n              = stress$n_final,                                       # sample cohort
+  effect_size_id        = stress$effect_size_id,                                # Effect size identifier
+  pop_cohort_dataset_id = stress$pop_cohort_dataset_id,                         # Population cohort/dataset identifier
+  sample_label          = stress$sample_label,
+  g                     = stress$stress_g                                       
+)                                                                               
+stress_meta$se <- sqrt((4 / stress_meta$n) + (stress_meta$g^2 / (2 * (stress_meta$n - 2))))          
+stress_meta$vi <- stress_meta$se^2
+
+
+depr_re   <- escalc(measure="SMD", yi=depr_meta$g, vi=depr_meta$vi, slab=depr_meta$slab, data=depr_meta)
+anx_re    <- escalc(measure="SMD", yi=anx_meta$g, vi=anx_meta$vi, slab=anx_meta$slab, data=anx_meta)
+stress_re <- escalc(measure="SMD", yi=stress_meta$g, vi=stress_meta$vi, slab=stress_meta$slab, data=stress_meta)
+
+
+####################################
+# 3. VARIANCE - COVARIANCE MATRIX  #
+###################################
+
+# Define rho value
+rho <- 0.5
+
+# Calculate the variance-covariance matrix
+V_depr   <- vcalc(vi, cluster = pop_cohort_dataset_id, obs = effect_size_id, data = depr_re, rho = rho)
+V_anx    <- vcalc(vi, cluster = pop_cohort_dataset_id, obs = effect_size_id, data = anx_re, rho = rho)
+V_stress <- vcalc(vi, cluster = pop_cohort_dataset_id, obs = effect_size_id, data = stress_re, rho = rho)
+
+
+###########################################################
+# 4. META-ANALYSIS WITH CHE & ROBUST VARIANCE ESTIMATION  #
+##########################################################
+
+
+res_depr   <- rma.mv(yi, V_depr, 
+                     random = ~ 1 | pop_cohort_dataset_id/effect_size_id, 
+                     data = depr_re, 
+                     method = "REML",
+                     test = 't',
+                     dfs = 'contain')
+
+res_anx    <- rma.mv(yi, V_anx, 
+                     random = ~ 1 | pop_cohort_dataset_id/effect_size_id, 
+                     data = anx_re, 
+                     method = "REML",
+                     test = 't',
+                     dfs = 'contain')
+
+res_stress <- rma.mv(yi, V_stress, 
+                     random = ~ 1 | pop_cohort_dataset_id/effect_size_id, 
+                     data = stress_re, 
+                     method = "REML",
+                     test = 't',
+                     dfs = 'contain')
+
+
+depr_resultrobust_g   <- robust(res_depr, cluster = pop_cohort_dataset_id, clubSandwich = TRUE, digits = 3)
+anx_resultrobust_g    <- robust(res_anx, cluster = pop_cohort_dataset_id, clubSandwich = TRUE, digits = 3)
+stress_resultrobust_g <- robust(res_stress, cluster = pop_cohort_dataset_id, clubSandwich = TRUE, digits = 3)
+
+
+###############################################
+# 5. DISTRIBUTIONS OF VARIANCE ACROSS LEVELS  #
+##############################################
+
+i2 <- var.comp(res_depr)
+summary(i2)
+plot(i2)
+
+i2 <- var.comp(res_anx)
+summary(i2)
+plot(i2)
+
+i2 <- var.comp(res_stress)
+summary(i2)
+plot(i2)
+
+
+####################
+# 6. FOREST PLOT  #
+###################
+
+
+# depression
+# **1. Create Aggregated Meta-Analysis Results:**
+depression_agg <- aggregate(depr_re, cluster = pop_cohort_dataset_id, V = V_depr, addk = TRUE)
+depression_agg
+depression_agg <- depression_agg %>%
+  left_join(
+    depr %>%
+      group_by(pop_cohort_dataset_id) %>%
+      summarize(
+        n_final = case_when(
+          pop_cohort_dataset_id[1] == 155 ~ sum(n_final, na.rm = TRUE),
+          TRUE ~ max(n_final, na.rm = TRUE)
+        )
+      ),
+    by = "pop_cohort_dataset_id"
+  )
+
+
+# **2. Fit Random-Effects Models on Aggregated Data:**
+depression_res <- rma(yi, vi, method = "REML", data = depression_agg, slab = sample_label, digits =3)
+depression_res <- robust(depression_res, cluster = pop_cohort_dataset_id, clubSandwich = TRUE, digits = 3)
+depression_res$n_final <- depression_agg$n_final
+
+total_n <- sum(depression_res$n_final, na.rm = TRUE)
+min_smd <- depression_agg[which.min(depression_agg$yi), ]
+max_smd <- depression_agg[which.max(depression_agg$yi), ]
+min_smd$ci.lb <- min_smd$yi - 1.96 * min_smd$se
+min_smd$ci.ub <- min_smd$yi + 1.96 * min_smd$se
+max_smd$ci.lb <- max_smd$yi - 1.96 * max_smd$se
+max_smd$ci.ub <- max_smd$yi + 1.96 * max_smd$se
+
+
+# **3. Plot Aggregated Forest Plots:**
+dev.new()
+par(mar=c(5,0,1.8,1.3), mgp=c(3,0.2,0), tcl=-0.2, family = "Fira Sans") 
+
+forest(depression_res,
+       mlab="MA CHE RVE",  
+       addpred=TRUE, 
+       header="Sample population",
+       ilab=cbind(ki, depression_res$n_final),
+       ilab.xpos=c(-2.0, -1.2), 
+       cex=.80, 
+       order=order(depression_res$data$sample_label, decreasing=FALSE), 
+       xlim=c(-4,2),
+       at=seq(-1.0,0.5,by=0.1), 
+       showweights=TRUE, 
+       shade=TRUE,
+       colshade="#eff3f2",
+       predstyle="bar",
+       lwd = 1.5,
+       pch=20,
+       psize=2)
+text(-2.0, depression_res$k + 2, "Number of Estimates", cex=0.80, font=2)  
+text(-1.2, depression_res$k + 2, "n", cex=0.80, font=2) 
+text( 0.8, depression_res$k + 2, "Weight", cex=0.80, font=2) 
+
+par(xpd=NA)
+text(-3.92, depression_res$k - 61.2, paste0("Total Sample population: ", total_n), cex=0.80, adj=0)
+text(-3.92, depression_res$k - 62.4, paste0("Min SMD: ", round(min_smd$yi, 2),
+                                            " [", round(min_smd$ci.lb, 2), ", ", round(min_smd$ci.ub, 2), "]"), cex=0.80, adj=0)
+text(-3.92, depression_res$k - 63.6, paste0("Max SMD: ", round(max_smd$yi, 2),
+                                            " [", round(max_smd$ci.lb, 2), ", ", round(max_smd$ci.ub, 2), "]"), cex=0.80, adj=0)                                        
+text(
+  x      = c(-1.0, 0.6),
+  y      = -4.2,
+  labels = c("Healthier", "Less healthy"),
+  pos    = c(4, 2),
+  offset = -0.5,
+  cex    = 0.6,                   
+  col    = c("darkgreen", "red"), 
+  font   = 2                      
+)
+
+
+
+# anxiety
+# **1. Create Aggregated Meta-Analysis Results:**
+anxiety_agg <- aggregate(anx_re, cluster = pop_cohort_dataset_id, V = V_anx, addk = TRUE)
+
+anxiety_agg <- anxiety_agg %>%
+  left_join(
+    anx %>%
+      group_by(pop_cohort_dataset_id) %>%
+      summarize(
+        n_final = case_when(
+          pop_cohort_dataset_id[1] == 155 ~ sum(n_final, na.rm = TRUE),
+          TRUE ~ max(n_final, na.rm = TRUE)
+        )
+      ),
+    by = "pop_cohort_dataset_id"
+  )
+
+
+# **2. Fit Random-Effects Models on Aggregated Data:**
+anxiety_res <- rma(yi, vi, method = "REML", data = anxiety_agg, slab = sample_label)
+anxiety_res <- robust(anxiety_res, cluster = pop_cohort_dataset_id, clubSandwich = TRUE, digits = 3)
+anxiety_res$n_final <- anxiety_agg$n_final
+
+total_n <- sum(anxiety_res$n_final, na.rm = TRUE)
+min_smd <- anxiety_agg[which.min(anxiety_agg$yi), ]
+max_smd <- anxiety_agg[which.max(anxiety_agg$yi), ]
+min_smd$ci.lb <- min_smd$yi - 1.96 * min_smd$se
+min_smd$ci.ub <- min_smd$yi + 1.96 * min_smd$se
+max_smd$ci.lb <- max_smd$yi - 1.96 * max_smd$se
+max_smd$ci.ub <- max_smd$yi + 1.96 * max_smd$se
+
+
+# **3. Plot Aggregated Forest Plots:**
+dev.new()
+par(mar=c(5,0,1.8,1.3), mgp=c(3,0.2,0), tcl=-0.2, family = "Fira Sans") 
+
+forest(anxiety_res,
+       mlab="MA CHE RVE",  
+       addpred=TRUE, 
+       header="Sample population",
+       ilab=cbind(ki, anxiety_res$n_final),
+       ilab.xpos=c(-2.0, -1.2), 
+       cex=.80, 
+       order=order(anxiety_res$data$sample_label, decreasing=FALSE), 
+       xlim=c(-4,2),
+       at=seq(-1.0,0.5,by=0.1), 
+       showweights=TRUE, 
+       shade=TRUE,
+       colshade="#eff3f2",
+       predstyle="bar",
+       lwd = 1.5,
+       pch=20,
+       psize=2)
+text(-2.0, anxiety_res$k + 2, "Number of Estimates", cex=0.80, font=2)  
+text(-1.2, anxiety_res$k + 2, "n", cex=0.80, font=2) 
+text( 0.8, anxiety_res$k + 2, "Weight", cex=0.80, font=2) 
+
+par(xpd=NA)
+text(-3.92, anxiety_res$k - 34.2, paste0("Total sample population: ", total_n), cex=0.80, adj=0)
+text(-3.92, anxiety_res$k - 35.4, paste0("Min SMD: ", round(min_smd$yi, 2),
+                                         " [", round(min_smd$ci.lb, 2), ", ", round(min_smd$ci.ub, 2), "]"), cex=0.80, adj=0)
+text(-3.92, anxiety_res$k - 36.6, paste0("Max SMD: ", round(max_smd$yi, 2),
+                                         " [", round(max_smd$ci.lb, 2), ", ", round(max_smd$ci.ub, 2), "]"), cex=0.80, adj=0)                                        
+text(
+  x      = c(-1.0, 0.6),
+  y      = -3.7,
+  labels = c("Healthier", "Less healthy"),
+  pos    = c(4, 2),
+  offset = -0.5,
+  cex    = 0.6,                   
+  col    = c("darkgreen", "red"), 
+  font   = 2                      
+)
+
+### Stress
+###########
+
+# **1. Create Aggregated Meta-Analysis Results:**
+stress_agg <- aggregate(stress_re, cluster = pop_cohort_dataset_id, V = V_stress, addk = TRUE)
+
+stress_agg <- stress_agg %>%
+  left_join(
+    depr %>%
+      group_by(pop_cohort_dataset_id) %>%
+      summarize(
+        n_final = case_when(
+          pop_cohort_dataset_id[1] == 155 ~ sum(n_final, na.rm = TRUE),
+          TRUE ~ max(n_final, na.rm = TRUE)
+        )
+      ),
+    by = "pop_cohort_dataset_id"
+  )
+
+
+# **2. Fit Random-Effects Models on Aggregated Data:**
+stress_res <- rma(yi, vi, method = "REML", data = stress_agg, slab = sample_label)
+stress_res <- robust(stress_res, cluster = pop_cohort_dataset_id, clubSandwich = TRUE, digits = 3)
+stress_res$n_final <- stress_agg$n_final
+
+total_n <- sum(stress_res$n_final, na.rm = TRUE)
+min_smd <- stress_agg[which.min(stress_agg$yi), ]
+max_smd <- stress_agg[which.max(stress_agg$yi), ]
+min_smd$ci.lb <- min_smd$yi - 1.96 * min_smd$se
+min_smd$ci.ub <- min_smd$yi + 1.96 * min_smd$se
+max_smd$ci.lb <- max_smd$yi - 1.96 * max_smd$se
+max_smd$ci.ub <- max_smd$yi + 1.96 * max_smd$se
+
+
+# **3. Plot Aggregated Forest Plots:**
+dev.new()
+par(mar=c(5,0,1.8,1.3), mgp=c(3,0.2,0), tcl=-0.2, family = "Fira Sans") 
+
+forest(stress_res,
+       mlab="MA CHE RVE",  
+       addpred=TRUE, 
+       header="Sample population",
+       ilab=cbind(ki, stress_res$n_final),
+       ilab.xpos=c(-2.0, -1.2), 
+       cex=.80, 
+       order=order(stress_res$data$sample_label, decreasing=FALSE), 
+       xlim=c(-4,2),
+       at=seq(-1.0,0.5,by=0.1), 
+       showweights=TRUE, 
+       shade=TRUE,
+       colshade="#eff3f2",
+       predstyle="bar",
+       lwd = 1.5,
+       pch=20,
+       psize=2)
+text(-2.0, stress_res$k + 2, "Number of Estimates", cex=0.80, font=2)  
+text(-1.2, stress_res$k + 2, "n", cex=0.80, font=2) 
+text( 0.8, stress_res$k + 2, "Weight", cex=0.80, font=2) 
+
+par(xpd=NA)
+text(-3.92, stress_res$k - 23.2, paste0("Total sample population: ", total_n), cex=0.80, adj=0)
+text(-3.92, stress_res$k - 24.4, paste0("Min SMD: ", round(min_smd$yi, 2),
+                                        " [", round(min_smd$ci.lb, 2), ", ", round(min_smd$ci.ub, 2), "]"), cex=0.80, adj=0)
+text(-3.92, stress_res$k - 25.6, paste0("Max SMD: ", round(max_smd$yi, 2),
+                                        " [", round(max_smd$ci.lb, 2), ", ", round(max_smd$ci.ub, 2), "]"), cex=0.80, adj=0)                                        
+text(
+  x      = c(-1.0, 0.6),
+  y      = -4.0,
+  labels = c("Healthier", "Less healthy"),
+  pos    = c(4, 2),
+  offset = -0.5,
+  cex    = 0.6,                   
+  col    = c("darkgreen", "red"), 
+  font   = 2                      
+)
+
+print("Script '3_meta_analysis_hedges_g.R' ran successfully")
+
+
+
